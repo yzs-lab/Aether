@@ -1,6 +1,7 @@
 import aether.measurement.sglang as sglang_measurement
 from aether.measurement.sglang import (
     _collect_sglang_metrics,
+    _delta_sglang_metrics,
     _extract_response_metrics,
     _request_summary,
     _run_configured_requests,
@@ -129,3 +130,87 @@ def test_collect_sglang_metrics_records_patched_endpoint(monkeypatch):
             "payload": payload,
         }
     ]
+
+
+def test_delta_sglang_metrics_removes_server_warmup_request():
+    baseline = {
+        "enabled": True,
+        "summary": {
+            "request_count": 1,
+            "prompt_tokens_total": 7,
+            "completion_tokens_total": 8,
+            "total_tokens_total": 15,
+            "e2e_latency_sum_s": 0.112,
+            "last_request_unix_s": 100.0,
+        },
+        "events": [{"timestamp_unix_s": 100.0, "completion_tokens": 8}],
+    }
+    after = {
+        "enabled": True,
+        "summary": {
+            "request_count": 2,
+            "prompt_tokens_total": 22,
+            "completion_tokens_total": 10,
+            "total_tokens_total": 32,
+            "e2e_latency_sum_s": 0.119,
+            "last_request_unix_s": 101.0,
+        },
+        "events": [
+            {"timestamp_unix_s": 100.0, "completion_tokens": 8},
+            {"timestamp_unix_s": 101.0, "completion_tokens": 2},
+        ],
+    }
+
+    delta = _delta_sglang_metrics(after, baseline)
+
+    assert delta["baseline_applied"] is True
+    assert delta["summary"]["request_count"] == 1
+    assert delta["summary"]["prompt_tokens_total"] == 15
+    assert delta["summary"]["completion_tokens_total"] == 2
+    assert delta["summary"]["total_tokens_total"] == 17
+    assert delta["summary"]["e2e_latency_sum_s"] == 0.007
+    assert delta["events"] == [{"timestamp_unix_s": 101.0, "completion_tokens": 2}]
+
+
+def test_collect_sglang_metrics_applies_baseline_delta(monkeypatch):
+    def fake_get_json(url, timeout_s):
+        return (
+            200,
+            {
+                "enabled": True,
+                "summary": {
+                    "request_count": 2,
+                    "prompt_tokens_total": 22,
+                    "completion_tokens_total": 10,
+                    "total_tokens_total": 32,
+                    "e2e_latency_sum_s": 0.119,
+                    "last_request_unix_s": 101.0,
+                },
+                "events": [
+                    {"timestamp_unix_s": 100.0, "completion_tokens": 8},
+                    {"timestamp_unix_s": 101.0, "completion_tokens": 2},
+                ],
+            },
+        )
+
+    monkeypatch.setattr(sglang_measurement, "_get_json", fake_get_json)
+    events = []
+    payload = _collect_sglang_metrics(
+        "http://127.0.0.1:30080",
+        {"sglang_metrics_endpoint": "/aether/metrics"},
+        events,
+        {
+            "summary": {
+                "request_count": 1,
+                "prompt_tokens_total": 7,
+                "completion_tokens_total": 8,
+                "total_tokens_total": 15,
+                "e2e_latency_sum_s": 0.112,
+                "last_request_unix_s": 100.0,
+            }
+        },
+    )
+
+    assert payload["summary"]["request_count"] == 1
+    assert payload["summary"]["completion_tokens_total"] == 2
+    assert events[0]["payload"]["baseline_applied"] is True

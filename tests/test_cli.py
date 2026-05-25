@@ -46,3 +46,11 @@ def test_cli_sglang_backend_is_optional(tmp_path):
     )
 
     assert rc == 2
+
+
+def test_cli_doctor_prints_hardware_backend(capsys):
+    rc = main(["doctor", "--config", "experiments/greensserve/sglang_cpu_ci.yaml"])
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "measurement_hardware_backend: cpu" in output

@@ -25,6 +25,7 @@ sglang:
 measurement:
   duration_seconds: 60
   sample_hz: 100
+  hardware_backend: gpu-nvml
   nvml_enabled: true
   health_timeout_seconds: 120
   sglang_metrics_endpoint: /aether/metrics

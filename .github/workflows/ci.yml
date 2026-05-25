@@ -99,7 +99,7 @@ jobs:
         run: |
           uv run aether doctor --config experiments/greensserve/sglang_cpu_ci.yaml
           timeout 15m uv run aether launch --backend sglang --config experiments/greensserve/sglang_cpu_ci.yaml --out /tmp/aether-sglang-cpu
-          uv run python -c "import json, pathlib; events=[json.loads(line) for line in pathlib.Path('/tmp/aether-sglang-cpu/events.jsonl').read_text().splitlines()]; metrics=[event for event in events if event.get('type') == 'sglang_aether_metrics']; assert metrics, 'missing patched SGLang Aether metrics event'; summary=metrics[-1]['payload']['summary']; assert summary['request_count'] >= 1, summary; assert summary['completion_tokens_total'] >= 2, summary; print('patched aether metrics ok', summary)"
+          uv run python -c "import json, pathlib; events=[json.loads(line) for line in pathlib.Path('/tmp/aether-sglang-cpu/events.jsonl').read_text().splitlines()]; metrics=[event for event in events if event.get('type') == 'sglang_aether_metrics']; cpu_power=[event for event in events if event.get('type') == 'power' and event.get('hardware_backend') == 'cpu']; assert metrics, 'missing patched SGLang Aether metrics event'; assert cpu_power, 'missing CPU hardware profiler power samples'; summary=metrics[-1]['payload']['summary']; assert summary['request_count'] == 1, summary; assert summary['completion_tokens_total'] == 2, summary; print('patched aether metrics ok', summary); print('cpu profiler sample ok', cpu_power[0])"
 
       - name: Show Aether SGLang CPU outputs
         if: always()

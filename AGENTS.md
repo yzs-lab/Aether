@@ -44,6 +44,9 @@ When code behavior changes, update the relevant doc below in the same PR.
 - `docs/architecture.md` is the system boundary and data-flow map. Update it
   when package layout, CLI command flow, normalized output schema, or backend
   boundaries change.
+- `docs/backend-abstractions.md` is the extension guide for serving backends,
+  hardware profiling backends, common measurement logic, and simulator
+  abstraction. Update it when any backend interface changes.
 - `docs/mock-validation.md` describes the deterministic CPU correctness gate.
   Update it when `src/aether/measurement/mock.py`, mock events, expected files,
   or golden-output assumptions change.
@@ -75,6 +78,9 @@ When code behavior changes, update the relevant doc below in the same PR.
 - Real SGLang backend changes: update `docs/real-data-collection.md`,
   `experiments/greensserve/sglang_cpu_ci.yaml`,
   `experiments/greensserve/sglang_real.yaml`, and the dedicated SGLang CI job.
+- Hardware profiling backend changes: update `docs/backend-abstractions.md`,
+  `docs/architecture.md`, config examples, unit tests with mocked hardware APIs,
+  and the SGLang CPU CI assertion when CPU behavior changes.
 - SGLang patch changes: update `patches/sglang/v0.5.12/README.md`,
   `docs/real-data-collection.md`, the patch apply checks, and the CI assertions
   that verify `/aether/metrics`.
@@ -89,11 +95,13 @@ name, it now implements the first real metrics path for Aether:
   `--aether-metrics-retain-events`.
 - SGLang endpoint: `GET /aether/metrics`.
 - Aether collection: `src/aether/measurement/sglang.py` reads the endpoint,
-  emits an `sglang_aether_metrics` event, writes `sglang_aether_metrics.json`,
-  and can require the endpoint with `measurement.require_sglang_metrics: true`.
+  takes a pre-workload metrics baseline, emits a delta
+  `sglang_aether_metrics` event, writes `sglang_aether_metrics.json`, and can
+  require the endpoint with `measurement.require_sglang_metrics: true`.
 - CI proof: the `SGLang CPU launch` job installs patched SGLang on Linux CPU,
-  runs `aether launch --backend sglang`, and asserts the metrics summary has at
-  least one request and generated tokens.
+  runs `aether launch --backend sglang`, asserts the metrics summary has at
+  least one request and generated tokens, and asserts the CPU hardware profiler
+  emitted `power` samples.
 
 Keep this patch metrics-only. Do not add scheduler, recompute/swap, DVFS, model
 execution, or routing behavior changes without a new design doc and matching

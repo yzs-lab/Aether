@@ -10,6 +10,7 @@ from typing import List, Optional
 
 from .config import ConfigError, load_config, render_sglang_args
 from .measurement.mock import run_mock
+from .measurement.profiling import select_hardware_backend
 from .measurement.sglang import SGLangMeasurementError, run_sglang
 from .results import write_csv
 from .simulator import simulate
@@ -58,11 +59,15 @@ def _cmd_launch(args: argparse.Namespace) -> int:
 def _cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     rows = simulate(config)
+    measurement = config.get("measurement", {}) or {}
+    if not isinstance(measurement, dict):
+        measurement = {}
     print("config: %s" % Path(args.config))
     print("simulation_scenarios: %s" % len(rows))
     print("sglang_args: %s" % " ".join(render_sglang_args(config)))
+    print("measurement_hardware_backend: %s" % select_hardware_backend(measurement))
     print("cpu_safe: true")
-    print("real_sglang_requires: SGLang plus a workload; GPU/NVML only when nvml_enabled=true")
+    print("real_sglang_requires: SGLang plus a workload; GPU/NVML only with hardware_backend=gpu-nvml")
     return 0
 
 

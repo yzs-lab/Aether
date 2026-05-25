@@ -1,5 +1,5 @@
 from aether.config import load_config
-from aether.simulator import simulate
+from aether.simulator import SimulationBackend, simulate
 
 
 def test_baseline_sweep_expands():
@@ -19,3 +19,15 @@ def test_bayesian_scheduler_selects_action():
 
     assert len(rows) == 1
     assert rows[0]["scheduling_action"] in {"recompute", "swap", "none"}
+
+
+def test_simulator_accepts_pluggable_backend():
+    class TinyBackend(SimulationBackend):
+        name = "tiny"
+
+        def simulate(self, config):
+            return [{"backend": self.name, "experiment": config["experiment"]["name"]}]
+
+    rows = simulate({"experiment": {"name": "custom"}}, backend=TinyBackend())
+
+    assert rows == [{"backend": "tiny", "experiment": "custom"}]

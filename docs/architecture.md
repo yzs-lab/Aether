@@ -4,14 +4,14 @@ Aether has three layers:
 
 1. Config and CLI: load YAML, render SGLang args, run commands, and write
    normalized outputs.
-2. Simulation: compute GreenServe/IPW metrics from reconstructed formulas and
-   scenario sweeps.
-3. Measurement: collect normalized data from either deterministic CPU mock
-   fixtures or future real SGLang/GPU runs.
+2. Simulation: compute GreenServe/IPW metrics from a pluggable simulation
+   backend. The default backend is the formula-led GreenServe simulator.
+3. Measurement: collect normalized data from serving backends and hardware
+   profiling backends.
 
 Real measurement is isolated from simulation and mock validation. The SGLang
-backend imports optional dependencies only inside the backend code path and
-fails with setup guidance if SGLang, CUDA, or NVML are unavailable.
+backend imports optional dependencies only inside the backend code path.
+Hardware profilers import optional hardware APIs only when selected.
 
 ## Data Flow
 
@@ -20,8 +20,29 @@ YAML config
   -> config loader
   -> simulate: sweep expander -> formula engine -> summary rows -> CSV
   -> launch mock: synthetic events -> normalized summary/events -> CSV/JSONL
-  -> launch sglang: process launcher + samplers -> normalized summary/events
+  -> launch sglang:
+       SGLang process launcher + workload runner
+       + selected hardware profiler
+       + patched metric reader
+       -> normalized summary/events
 ```
+
+## Backend Boundaries
+
+Serving backends launch and exercise model servers. The current serving
+backends are `mock` and `sglang`.
+
+Hardware profiling backends sample the machine while a serving backend runs.
+The current hardware profilers are:
+
+- `cpu`: process CPU time, RSS, and explicit estimated CPU power
+- `gpu-nvml`: NVIDIA power, memory, utilization, clocks, and temperature
+- `mock-gpu`: deterministic GPU-shaped samples for tests
+- `none`: no hardware sampling
+
+The common measurement summary layer consumes normalized request events and
+`power` events from any hardware profiler. This keeps energy/IPW row generation
+shared across CPU, GPU, mock, and future profilers.
 
 ## Normalized Outputs
 
@@ -41,3 +62,5 @@ All execution paths write the same summary fields where possible:
 The submodule is pinned to SGLang `v0.5.12`. The first patch series is
 observability-only: it adds or documents hooks for power, token, KV, swap, and
 preemption metrics without changing scheduling behavior.
+
+See `docs/backend-abstractions.md` for the extension plan and interface split.
