@@ -1,0 +1,62 @@
+experiment:
+  name: greensserve-sglang-cpu-ci
+  tags: [sglang, cpu, ci, real-launch]
+
+model:
+  name: tiny-random-llama-sglang-cpu
+  layers: 2
+  kv_heads: 4
+  head_dim: 16
+  kv_dtype_bytes: 2
+  weight_gb: 0.01
+  quality_score: 1.0
+
+sglang:
+  args:
+    model-path: hf-internal-testing/tiny-random-LlamaForCausalLM
+    host: 127.0.0.1
+    port: 30080
+    device: cpu
+    context-length: 256
+    max-total-tokens: 512
+    load-format: dummy
+    tensor-parallel-size: 1
+    disable-overlap-schedule: true
+  extra_args: []
+
+measurement:
+  duration_seconds: 1
+  sample_hz: 1
+  nvml_enabled: false
+  health_timeout_seconds: 240
+  request_timeout_seconds: 120
+  requests:
+    - endpoint: /generate
+      payload:
+        text: "Human: Say hello in one short sentence.\n\nAssistant:"
+        sampling_params:
+          temperature: 0.0
+          max_new_tokens: 2
+        stream: false
+
+workload:
+  prompt_tokens: 16
+  generated_tokens: 2
+  target_concurrency: 1
+  preemption_probability: 0.0
+
+simulation:
+  hardware_profiles:
+    - name: github-actions-cpu
+      gpu_count: 1
+      tdp_w: 65
+      vram_gb: 8
+      gpu_memory_utilization: 0.5
+      pcie_bandwidth_gbps: 16
+      prefill_tps_per_gpu: 50
+      decode_tps_per_gpu: 5
+  sweeps:
+    context_lengths: [256]
+    kv_compression_ratios: [1.0]
+    routing_policies: [single_pool]
+    scheduling_policies: [none]

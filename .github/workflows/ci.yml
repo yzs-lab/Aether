@@ -1,0 +1,120 @@
+name: CI
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  cpu:
+    name: CPU checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --group dev --group sglang
+
+      - name: Verify Python
+        run: uv run python --version
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Run simulation smoke
+        run: uv run aether simulate --config experiments/greensserve/baseline.yaml --out /tmp/aether-sim.csv
+
+      - name: Run mock measurement smoke
+        run: uv run aether launch --backend mock --config experiments/greensserve/mock_measurement.yaml --out /tmp/aether-mock
+
+      - name: Verify SGLang submodule pin
+        run: |
+          test "$(git -C third_party/sglang rev-parse HEAD)" = "127b9e3283f7c2a43234b852ff5c9f1796d53624"
+
+      - name: Verify SGLang patch applies
+        run: |
+          git -C third_party/sglang apply --check ../../patches/sglang/v0.5.12/0001-aether-ipw-metrics-scaffold.patch
+
+  sglang-cpu:
+    name: SGLang CPU launch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      UV_CONFIG_FILE: ${{ github.workspace }}/.github/uv-sglang-cpu.toml
+      SGLANG_USE_CPU_ENGINE: "1"
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install system packages for SGLang CPU
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y google-perftools libtbb-dev libnuma-dev numactl
+
+      - name: Install Aether dependencies
+        run: uv sync --group dev --group sglang
+
+      - name: Apply Aether SGLang metrics patch
+        run: |
+          git -C third_party/sglang apply ../../patches/sglang/v0.5.12/0001-aether-ipw-metrics-scaffold.patch
+          test -f third_party/sglang/AETHER_IPW_METRICS.md
+
+      - name: Install SGLang CPU from pinned submodule
+        run: |
+          cp third_party/sglang/python/pyproject_cpu.toml third_party/sglang/python/pyproject.toml
+          cp third_party/sglang/sgl-kernel/pyproject_cpu.toml third_party/sglang/sgl-kernel/pyproject.toml
+          uv pip install --upgrade pip setuptools wheel
+          uv pip install third_party/sglang/python
+          uv pip install third_party/sglang/sgl-kernel
+          uv run python -c "import sglang, sgl_kernel; print('sglang import ok', sglang.__file__); print('sgl_kernel import ok', sgl_kernel.__file__)"
+
+      - name: Run Aether against real SGLang CPU server
+        env:
+          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+          LD_PRELOAD: ${{ github.workspace }}/.venv/lib/libiomp5.so:/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4:/usr/lib/x86_64-linux-gnu/libtbbmalloc.so.2
+        run: |
+          uv run aether doctor --config experiments/greensserve/sglang_cpu_ci.yaml
+          timeout 15m uv run aether launch --backend sglang --config experiments/greensserve/sglang_cpu_ci.yaml --out /tmp/aether-sglang-cpu
+
+      - name: Show Aether SGLang CPU outputs
+        if: always()
+        run: |
+          echo "===== command.json ====="
+          test -f /tmp/aether-sglang-cpu/command.json && cat /tmp/aether-sglang-cpu/command.json || true
+          echo "===== summary.csv ====="
+          test -f /tmp/aether-sglang-cpu/summary.csv && cat /tmp/aether-sglang-cpu/summary.csv || true
+          echo "===== events.jsonl ====="
+          test -f /tmp/aether-sglang-cpu/events.jsonl && head -100 /tmp/aether-sglang-cpu/events.jsonl || true
+          echo "===== sglang.log tail ====="
+          test -f /tmp/aether-sglang-cpu/sglang.log && tail -200 /tmp/aether-sglang-cpu/sglang.log || true
+
+      - name: Upload SGLang CPU artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-sglang-cpu
+          path: /tmp/aether-sglang-cpu
+          if-no-files-found: ignore
