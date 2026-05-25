@@ -1,7 +1,47 @@
 # Real SGLang Data Collection
 
-Real measurement is separate from CPU validation. Use it only on a machine with
-NVIDIA GPUs, working drivers, CUDA, NVML, and an installed SGLang environment.
+Real measurement is separate from mock validation. Aether can run SGLang in CPU
+mode for integration checks, and it can run GPU/NVML collection on a machine
+with NVIDIA GPUs, working drivers, CUDA, NVML, and an installed SGLang
+environment.
+
+## CI CPU SGLang Check
+
+GitHub Actions has a dedicated `SGLang CPU launch` job that performs a real
+source install from the pinned `third_party/sglang` submodule:
+
+1. configure uv to use PyTorch CPU wheels
+2. install the Linux system libraries required by SGLang's CPU backend
+3. apply `patches/sglang/v0.5.12/0001-aether-ipw-metrics-scaffold.patch`
+4. copy SGLang's `pyproject_cpu.toml` files into place
+5. install `third_party/sglang/python` and `third_party/sglang/sgl-kernel`
+6. run `aether launch --backend sglang` with
+   `experiments/greensserve/sglang_cpu_ci.yaml`
+
+The CI log prints `command.json`, `summary.csv`, `events.jsonl`, and the tail
+of `sglang.log`. The run is intentionally tiny: it uses
+`hf-internal-testing/tiny-random-LlamaForCausalLM`, `--load-format dummy`,
+`--device cpu`, and a two-token `/generate` request. This validates Aether's
+real launcher, health polling, request path, metric extraction, and normalized
+result writer without requiring a GPU.
+
+The same CPU path can be run manually on Linux:
+
+```bash
+export UV_CONFIG_FILE=$PWD/.github/uv-sglang-cpu.toml
+export SGLANG_USE_CPU_ENGINE=1
+sudo apt-get update
+sudo apt-get install --no-install-recommends -y google-perftools libtbb-dev libnuma-dev numactl
+uv sync --group dev --group sglang
+git -C third_party/sglang apply ../../patches/sglang/v0.5.12/0001-aether-ipw-metrics-scaffold.patch
+cp third_party/sglang/python/pyproject_cpu.toml third_party/sglang/python/pyproject.toml
+cp third_party/sglang/sgl-kernel/pyproject_cpu.toml third_party/sglang/sgl-kernel/pyproject.toml
+uv pip install third_party/sglang/python
+uv pip install third_party/sglang/sgl-kernel
+export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu
+export LD_PRELOAD=$PWD/.venv/lib/libiomp5.so:/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4:/usr/lib/x86_64-linux-gnu/libtbbmalloc.so.2
+uv run aether launch --backend sglang --config experiments/greensserve/sglang_cpu_ci.yaml --out results/sglang-cpu-ci
+```
 
 ## Prepare SGLang
 
@@ -56,7 +96,7 @@ The SGLang backend will:
 2. launch `python -m sglang.launch_server`
 3. wait for `/health`
 4. sample NVML power when `measurement.nvml_enabled` is true
-5. optionally run the configured workload command
+5. run configured HTTP requests or an optional workload command
 6. write normalized `summary.csv` and `events.jsonl`
 
 ## Data To Record

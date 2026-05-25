@@ -62,7 +62,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print("simulation_scenarios: %s" % len(rows))
     print("sglang_args: %s" % " ".join(render_sglang_args(config)))
     print("cpu_safe: true")
-    print("real_sglang_requires: SGLang, CUDA, NVML, GPU, and a workload")
+    print("real_sglang_requires: SGLang plus a workload; GPU/NVML only when nvml_enabled=true")
     return 0
 
 

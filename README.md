@@ -6,15 +6,19 @@ supports pure simulation and a deterministic mock measurement backend that
 validates the same result schema used by future SGLang/GPU runs.
 
 The GitHub CI is CPU-only. It uses uv with Python 3.13, runs tests and smoke
-commands, and verifies the SGLang metrics patch applies to the pinned submodule.
+commands, verifies the SGLang metrics patch applies to the pinned submodule,
+and has a dedicated job that installs SGLang's CPU source build, launches an
+actual SGLang CPU server, sends an Aether-managed request, and prints the
+normalized outputs.
 
-Real GPU experiments are kept separate. The SGLang backend is present, but it
-only runs when SGLang, CUDA/NVML, and a workload are available in the active
-environment.
+Real GPU experiments are kept separate. The SGLang backend is present, but GPU
+power sampling only runs when SGLang, CUDA/NVML, and a workload are available
+in the active environment.
 
-Note: SGLang `v0.5.12` real serving is Linux/GPU-oriented. On this local macOS
-arm64 machine, full install is blocked by upstream Linux-only `sgl-deep-gemm`
-wheels; see `docs/real-data-collection.md` for the smoke-test result.
+Note: SGLang `v0.5.12` real serving is Linux-oriented. On this local macOS arm64
+machine, full install is blocked by upstream Linux-only `sgl-deep-gemm` wheels;
+see `docs/real-data-collection.md` for the smoke-test result and the Linux CPU
+CI path.
 
 ## Install
 
@@ -62,6 +66,7 @@ Examples live in `experiments/greensserve/`.
 
 - `baseline.yaml`: pure simulation sweep.
 - `mock_measurement.yaml`: CPU-only launcher and collector validation.
+- `sglang_cpu_ci.yaml`: real SGLang CPU launch used by GitHub Actions.
 - `sglang_real.yaml`: template for future SGLang/GPU measurement.
 
 The SGLang config accepts structured args:
@@ -91,4 +96,6 @@ Real collection is documented in `docs/real-data-collection.md`. In short:
 4. Run `uv run aether launch --backend sglang --config experiments/greensserve/sglang_real.yaml --out results/real-run`.
 5. Use `summary.csv`, `events.jsonl`, SGLang logs, and NVML samples for analysis.
 
-The current test suite does not require SGLang, CUDA, NVML, or a GPU.
+The unit test suite does not require SGLang, CUDA, NVML, or a GPU. GitHub CI
+adds an integration job that installs SGLang CPU separately and exercises the
+same Aether result writer against a live local SGLang server.
