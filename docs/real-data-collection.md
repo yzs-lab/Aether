@@ -23,7 +23,14 @@ The CI log prints `command.json`, `summary.csv`, `events.jsonl`,
 `hf-internal-testing/tiny-random-LlamaForCausalLM`, `--load-format dummy`,
 `--device cpu`, `--enable-aether-metrics`, and a two-token `/generate` request.
 This validates Aether's real launcher, health polling, request path, patched
-SGLang metric extraction, and normalized result writer without requiring a GPU.
+SGLang metric extraction, CPU hardware profiler, and normalized result writer
+without requiring a GPU. The CPU profiler samples process CPU/RSS data and
+emits estimated `power` events with `hardware_backend=cpu`.
+
+Aether snapshots `/aether/metrics` after SGLang becomes healthy and before the
+configured workload starts. The final metrics payload is reported as a delta
+from that baseline so SGLang server warmup requests are not counted as workload
+tokens or latency.
 
 The same CPU path can be run manually on Linux:
 
@@ -51,6 +58,20 @@ The current SGLang patch adds:
 - request completion hooks that record prompt tokens, completion tokens,
   total tokens, E2E latency, TTFT, TBT, finish reason, server settings,
   scheduler info, and internal state snapshots
+
+## Hardware Profiling Selection
+
+Aether selects hardware profiling with `measurement.hardware_backend`:
+
+- `cpu`: process CPU/RSS samples plus an explicit power estimate from
+  `measurement.cpu_power_w`. This is validated in GitHub CI.
+- `gpu-nvml`: NVIDIA GPU samples through optional `pynvml`. Use this for real
+  GPU experiments.
+- `mock-gpu`: deterministic GPU-shaped samples for tests and dry runs.
+- `none`: disabled profiling.
+
+Legacy `measurement.nvml_enabled: true` still maps to `gpu-nvml`; `false` maps
+to `none` unless `hardware_backend` is explicitly set.
 
 ## Prepare SGLang
 
@@ -104,15 +125,16 @@ The SGLang backend will:
 1. render configured SGLang args
 2. launch `python -m sglang.launch_server`
 3. wait for `/health`
-4. sample NVML power when `measurement.nvml_enabled` is true
+4. start the selected hardware profiler
 5. run configured HTTP requests or an optional workload command
-6. collect patched SGLang metrics from `/aether/metrics` when configured
+6. collect patched SGLang metrics from `/aether/metrics` when configured,
+   subtracting the pre-workload baseline
 7. write normalized `summary.csv`, `events.jsonl`, and
    `sglang_aether_metrics.json`
 
 ## Data To Record
 
-- NVML power samples at 100 Hz or higher
+- hardware profiler power samples at 100 Hz or higher for GPU runs
 - TTFT, TBT, and end-to-end latency
 - prompt and generation token counts
 - KV cache usage

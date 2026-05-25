@@ -9,12 +9,12 @@ The GitHub CI is CPU-only. It uses uv with Python 3.13, runs tests and smoke
 commands, verifies the SGLang metrics patch applies to the pinned submodule,
 and has a dedicated job that installs SGLang's CPU source build, applies the
 Aether metrics patch, launches an actual SGLang CPU server, sends an
-Aether-managed request, reads `/aether/metrics`, and prints the normalized
-outputs.
+Aether-managed request, samples the SGLang process with the CPU hardware
+profiler, reads `/aether/metrics`, and prints the normalized outputs.
 
 Real GPU experiments are kept separate. The SGLang backend is present, but GPU
-power sampling only runs when SGLang, CUDA/NVML, and a workload are available
-in the active environment.
+power sampling only runs when `measurement.hardware_backend: gpu-nvml`,
+SGLang, CUDA/NVML, and a workload are available in the active environment.
 
 Note: SGLang `v0.5.12` real serving is Linux-oriented. On this local macOS arm64
 machine, full install is blocked by upstream Linux-only `sgl-deep-gemm` wheels;
@@ -97,9 +97,23 @@ sglang:
     enable-aether-metrics: true
     aether-metrics-retain-events: 32
 measurement:
+  hardware_backend: cpu
+  cpu_power_w: 35
   sglang_metrics_endpoint: /aether/metrics
   require_sglang_metrics: true
 ```
+
+Hardware profiling is selected independently from the serving backend:
+
+- `hardware_backend: cpu` samples process CPU/RSS metrics and emits estimated
+  CPU power events. This is what the SGLang CPU CI job validates.
+- `hardware_backend: gpu-nvml` samples NVIDIA power, memory, utilization,
+  clocks, and temperature through optional `pynvml`.
+- `hardware_backend: mock-gpu` emits deterministic GPU-shaped power samples for
+  unit tests and dry runs.
+
+See `docs/backend-abstractions.md` for the serving-backend and hardware-profiler
+interface split.
 
 ## Real Data Collection
 
@@ -109,7 +123,8 @@ Real collection is documented in `docs/real-data-collection.md`. In short:
 2. Apply the metrics-only patch series from `patches/sglang/v0.5.12/`.
 3. Install patched SGLang in the active GPU environment.
 4. Run `uv run aether launch --backend sglang --config experiments/greensserve/sglang_real.yaml --out results/real-run`.
-5. Use `summary.csv`, `events.jsonl`, SGLang logs, and NVML samples for analysis.
+5. Use `summary.csv`, `events.jsonl`, SGLang logs, and hardware profiler
+   samples for analysis.
 
 The unit test suite does not require SGLang, CUDA, NVML, or a GPU. GitHub CI
 adds an integration job that installs SGLang CPU separately and exercises the

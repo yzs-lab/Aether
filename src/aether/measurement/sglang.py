@@ -10,16 +10,16 @@ import importlib.util
 import json
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .. import formulas
 from ..config import render_sglang_args
 from ..results import write_csv, write_jsonl
+from .profiling import HardwareProfilerError, build_hardware_profiler
+from .summary import as_float, as_int, measurement_summary_row, request_summary
 
 
 class SGLangMeasurementError(RuntimeError):
@@ -57,73 +57,6 @@ def _wait_for_health(url: str, timeout_s: float) -> bool:
         except URLError:
             time.sleep(1)
     return False
-
-
-class _NvmlSampler:
-    def __init__(self, sample_hz: int, events: List[Dict[str, Any]]):
-        self.sample_hz = max(1, int(sample_hz))
-        self.events = events
-        self.stop_event = threading.Event()
-        self.thread: Optional[threading.Thread] = None
-        self.error: Optional[BaseException] = None
-
-    def start(self) -> None:
-        self.thread = threading.Thread(target=self._run, name="aether-nvml-sampler")
-        self.thread.daemon = True
-        self.thread.start()
-        time.sleep(0.05)
-        if self.error is not None:
-            raise SGLangMeasurementError(str(self.error))
-
-    def stop(self) -> None:
-        self.stop_event.set()
-        if self.thread is not None:
-            self.thread.join(timeout=5)
-        if self.error is not None:
-            raise SGLangMeasurementError(str(self.error))
-
-    def _run(self) -> None:
-        try:
-            import pynvml  # type: ignore
-
-            pynvml.nvmlInit()
-            device_count = pynvml.nvmlDeviceGetCount()
-            interval = 1.0 / float(self.sample_hz)
-            start = time.time()
-            while not self.stop_event.is_set():
-                ts = round(time.time() - start, 6)
-                for gpu_id in range(device_count):
-                    handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
-                    power_w = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
-                    memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                    self.events.append(
-                        {
-                            "type": "power",
-                            "backend": "sglang",
-                            "time_s": ts,
-                            "gpu_id": gpu_id,
-                            "power_w": power_w,
-                            "memory_used_bytes": int(memory.used),
-                            "memory_total_bytes": int(memory.total),
-                        }
-                    )
-                self.stop_event.wait(interval)
-            pynvml.nvmlShutdown()
-        except BaseException as exc:  # pragma: no cover - requires GPU/NVML
-            self.error = exc
-
-
-def _power_summary(events: List[Dict[str, Any]], fallback_duration: float) -> Tuple[float, float, float]:
-    by_ts: Dict[float, float] = {}
-    for event in events:
-        if event.get("type") == "power":
-            by_ts.setdefault(float(event.get("time_s", 0.0)), 0.0)
-            by_ts[float(event.get("time_s", 0.0))] += float(event.get("power_w", 0.0))
-    if not by_ts:
-        return fallback_duration, 0.0, 0.0
-    elapsed = max(by_ts) if max(by_ts) > 0 else fallback_duration
-    avg_power = sum(by_ts.values()) / len(by_ts)
-    return elapsed, avg_power, avg_power * elapsed
 
 
 def _post_json(url: str, payload: Mapping[str, Any], timeout_s: float) -> Tuple[int, Dict[str, Any]]:
@@ -168,22 +101,118 @@ def _get_json(url: str, timeout_s: float) -> Tuple[int, Dict[str, Any]]:
         raise SGLangMeasurementError("SGLang metrics request failed: %s" % exc) from exc
 
 
-def _as_int(value: Any) -> int:
-    if value is None:
-        return 0
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+def _metrics_endpoint(measurement: Mapping[str, Any]) -> str | None:
+    endpoint = measurement.get("sglang_metrics_endpoint", "/aether/metrics")
+    if endpoint in (None, False):
+        return None
+    endpoint = str(endpoint)
+    if not endpoint.startswith("/"):
+        endpoint = "/" + endpoint
+    return endpoint
 
 
-def _as_float(value: Any) -> float:
-    if value is None:
-        return 0.0
+def _read_sglang_metrics(
+    base_url: str,
+    measurement: Mapping[str, Any],
+) -> Tuple[str, int, Dict[str, Any]] | None:
+    endpoint = _metrics_endpoint(measurement)
+    if endpoint is None:
+        return None
+    request_timeout = float(measurement.get("request_timeout_seconds", 120))
+    status, payload = _get_json(base_url + endpoint, request_timeout)
+    return endpoint, status, payload
+
+
+def _snapshot_sglang_metrics(
+    base_url: str,
+    measurement: Mapping[str, Any],
+) -> Dict[str, Any]:
+    require_metrics = bool(measurement.get("require_sglang_metrics", False))
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+        snapshot = _read_sglang_metrics(base_url, measurement)
+    except SGLangMeasurementError:
+        if require_metrics:
+            raise
+        return {}
+    if snapshot is None:
+        return {}
+    _, _, payload = snapshot
+    if require_metrics and not bool(payload.get("enabled", False)):
+        raise SGLangMeasurementError(
+            "SGLang Aether metrics endpoint is present but disabled"
+        )
+    return payload
+
+
+def _summary_delta(
+    after: Mapping[str, Any],
+    before: Mapping[str, Any],
+) -> Dict[str, Any]:
+    delta = dict(after)
+    counter_fields = [
+        "request_count",
+        "prompt_tokens_total",
+        "completion_tokens_total",
+        "total_tokens_total",
+    ]
+    for field in counter_fields:
+        delta[field] = max(0, as_int(after.get(field)) - as_int(before.get(field)))
+
+    e2e_delta = max(
+        0.0,
+        as_float(after.get("e2e_latency_sum_s")) - as_float(before.get("e2e_latency_sum_s")),
+    )
+    delta["e2e_latency_sum_s"] = round(e2e_delta, 9)
+    request_count = as_int(delta.get("request_count"))
+    delta["e2e_latency_avg_s"] = round(e2e_delta / request_count, 9) if request_count else 0.0
+
+    for field in ["ttft_avg_s", "tbt_avg_s"]:
+        if request_count:
+            delta[field] = as_float(after.get(field))
+        else:
+            delta[field] = 0.0
+    if as_int(delta.get("request_count")):
+        delta["last_request_unix_s"] = after.get("last_request_unix_s")
+    else:
+        delta["last_request_unix_s"] = None
+    return delta
+
+
+def _delta_sglang_metrics(
+    payload: Mapping[str, Any],
+    baseline: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    if not baseline:
+        return dict(payload)
+
+    payload_summary = (
+        payload.get("summary", {}) if isinstance(payload.get("summary"), Mapping) else {}
+    )
+    baseline_summary = (
+        baseline.get("summary", {}) if isinstance(baseline.get("summary"), Mapping) else {}
+    )
+    delta_summary = _summary_delta(payload_summary, baseline_summary)
+
+    payload_events = payload.get("events", [])
+    if not isinstance(payload_events, list):
+        payload_events = []
+    baseline_last_request = as_float(baseline_summary.get("last_request_unix_s"))
+    if baseline_last_request:
+        delta_events = [
+            event
+            for event in payload_events
+            if isinstance(event, Mapping)
+            and as_float(event.get("timestamp_unix_s")) > baseline_last_request
+        ]
+    else:
+        request_count = as_int(delta_summary.get("request_count"))
+        delta_events = payload_events[-request_count:] if request_count else []
+
+    delta_payload = dict(payload)
+    delta_payload["summary"] = delta_summary
+    delta_payload["events"] = delta_events
+    delta_payload["baseline_applied"] = True
+    return delta_payload
 
 
 def _extract_response_metrics(response: Mapping[str, Any]) -> Dict[str, Any]:
@@ -191,9 +220,9 @@ def _extract_response_metrics(response: Mapping[str, Any]) -> Dict[str, Any]:
 
     usage = response.get("usage")
     if isinstance(usage, dict):
-        prompt_tokens = _as_int(usage.get("prompt_tokens"))
-        completion_tokens = _as_int(usage.get("completion_tokens"))
-        total_tokens = _as_int(usage.get("total_tokens")) or prompt_tokens + completion_tokens
+        prompt_tokens = as_int(usage.get("prompt_tokens"))
+        completion_tokens = as_int(usage.get("completion_tokens"))
+        total_tokens = as_int(usage.get("total_tokens")) or prompt_tokens + completion_tokens
         return {
             "prompt_tokens": prompt_tokens,
             "generated_tokens": completion_tokens,
@@ -216,15 +245,15 @@ def _extract_response_metrics(response: Mapping[str, Any]) -> Dict[str, Any]:
         meta = item.get("meta_info", {})
         if not isinstance(meta, dict):
             meta = {}
-        prompt_tokens += _as_int(meta.get("prompt_tokens") or meta.get("input_tokens"))
-        generated_tokens += _as_int(
+        prompt_tokens += as_int(meta.get("prompt_tokens") or meta.get("input_tokens"))
+        generated_tokens += as_int(
             meta.get("completion_tokens") or meta.get("output_tokens")
         )
-        total_tokens += _as_int(meta.get("total_tokens"))
-        latency = _as_float(meta.get("e2e_latency") or meta.get("latency"))
+        total_tokens += as_int(meta.get("total_tokens"))
+        latency = as_float(meta.get("e2e_latency") or meta.get("latency"))
         if latency > 0:
             latencies.append(latency)
-        ttft = _as_float(
+        ttft = as_float(
             meta.get("ttft")
             or meta.get("time_to_first_token")
             or meta.get("first_token_latency")
@@ -232,7 +261,7 @@ def _extract_response_metrics(response: Mapping[str, Any]) -> Dict[str, Any]:
         )
         if ttft > 0:
             ttfts.append(ttft)
-        tbt = _as_float(
+        tbt = as_float(
             meta.get("tbt")
             or meta.get("inter_token_latency")
             or meta.get("decode_token_latency")
@@ -308,17 +337,11 @@ def _collect_sglang_metrics(
     base_url: str,
     measurement: Mapping[str, Any],
     events: List[Dict[str, Any]],
+    baseline_metrics: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    endpoint = measurement.get("sglang_metrics_endpoint", "/aether/metrics")
-    if endpoint in (None, False):
-        return {}
-    endpoint = str(endpoint)
-    if not endpoint.startswith("/"):
-        endpoint = "/" + endpoint
     require_metrics = bool(measurement.get("require_sglang_metrics", False))
-    request_timeout = float(measurement.get("request_timeout_seconds", 120))
     try:
-        status, payload = _get_json(base_url + endpoint, request_timeout)
+        snapshot = _read_sglang_metrics(base_url, measurement)
     except SGLangMeasurementError:
         if require_metrics:
             raise
@@ -331,6 +354,10 @@ def _collect_sglang_metrics(
             }
         )
         return {}
+    if snapshot is None:
+        return {}
+    endpoint, status, payload = snapshot
+    payload = _delta_sglang_metrics(payload, baseline_metrics)
 
     event = {
         "type": "sglang_aether_metrics",
@@ -349,31 +376,7 @@ def _collect_sglang_metrics(
 
 
 def _request_summary(events: List[Dict[str, Any]]) -> Dict[str, Any]:
-    request_events = [event for event in events if event.get("type") == "request"]
-    prompt_tokens = sum(_as_int(event.get("prompt_tokens")) for event in request_events)
-    generated_tokens = sum(
-        _as_int(event.get("generated_tokens")) for event in request_events
-    )
-    request_latency = sum(_as_float(event.get("latency_s")) for event in request_events)
-    ttft_values = [
-        _as_float(event.get("ttft_ms"))
-        for event in request_events
-        if _as_float(event.get("ttft_ms")) > 0
-    ]
-    tbt_values = [
-        _as_float(event.get("tbt_ms"))
-        for event in request_events
-        if _as_float(event.get("tbt_ms")) > 0
-    ]
-    return {
-        "prompt_tokens": prompt_tokens,
-        "generated_tokens": generated_tokens,
-        "request_latency_s": request_latency,
-        "ttft_ms": round(sum(ttft_values) / len(ttft_values), 6)
-        if ttft_values
-        else 0.0,
-        "tbt_ms": round(sum(tbt_values) / len(tbt_values), 6) if tbt_values else 0.0,
-    }
+    return request_summary(events)
 
 
 def run_sglang(config: Mapping[str, Any], out_dir: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -384,13 +387,11 @@ def run_sglang(config: Mapping[str, Any], out_dir: str) -> Tuple[Dict[str, Any],
     measurement = dict(config.get("measurement", {}) or {})
     duration = float(measurement.get("duration_seconds", 60))
     timeout = float(measurement.get("health_timeout_seconds", 120))
-    sample_hz = int(measurement.get("sample_hz", 100))
-    nvml_enabled = bool(measurement.get("nvml_enabled", True))
     args = render_sglang_args(config)
     command = [sys.executable, "-m", "sglang.launch_server"] + args
 
     events: List[Dict[str, Any]] = [{"type": "launch", "command": command}]
-    sampler = _NvmlSampler(sample_hz, events) if nvml_enabled else None
+    profiler = None
     collection_elapsed = duration
     patched_metrics: Dict[str, Any] = {}
     with log_path.open("w", encoding="utf-8") as log_handle:
@@ -402,8 +403,27 @@ def run_sglang(config: Mapping[str, Any], out_dir: str) -> Tuple[Dict[str, Any],
                     "SGLang did not become healthy at %s" % health_url
                 )
             events.append({"type": "health", "url": health_url, "ok": True})
-            if sampler is not None:
-                sampler.start()
+            try:
+                profiler = build_hardware_profiler(
+                    config,
+                    events,
+                    backend_label="sglang",
+                    process_id=process.pid,
+                )
+                events.append(
+                    {
+                        "type": "hardware_profiler",
+                        "backend": "sglang",
+                        "hardware_backend": profiler.hardware_backend,
+                        "ok": True,
+                    }
+                )
+                profiler.start()
+            except HardwareProfilerError as exc:
+                raise SGLangMeasurementError(str(exc)) from exc
+            metrics_baseline = _snapshot_sglang_metrics(
+                _server_base_url(config), measurement
+            )
             collection_start = time.monotonic()
             configured_requests = _configured_requests(measurement)
             workload_command = measurement.get("workload_command")
@@ -429,70 +449,37 @@ def run_sglang(config: Mapping[str, Any], out_dir: str) -> Tuple[Dict[str, Any],
                 time.sleep(duration)
                 events.append({"type": "idle_collection", "duration_seconds": duration})
             patched_metrics = _collect_sglang_metrics(
-                _server_base_url(config), measurement, events
+                _server_base_url(config), measurement, events, metrics_baseline
             )
             collection_elapsed = max(time.monotonic() - collection_start, 0.000001)
         finally:
-            sampler_error = None
-            if sampler is not None:
+            profiler_error = None
+            if profiler is not None:
                 try:
-                    sampler.stop()
-                except SGLangMeasurementError as exc:
-                    sampler_error = exc
+                    profiler.stop()
+                except HardwareProfilerError as exc:
+                    profiler_error = exc
             process.terminate()
             try:
                 process.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 process.kill()
-            if sampler_error is not None:
-                raise sampler_error
+            if profiler_error is not None:
+                raise SGLangMeasurementError(str(profiler_error)) from profiler_error
 
-    requests = _request_summary(events)
-    patched_summary = (
-        patched_metrics.get("summary", {})
-        if isinstance(patched_metrics.get("summary"), dict)
-        else {}
+    row = measurement_summary_row(
+        config,
+        events,
+        backend="sglang",
+        scenario_id="sglang-real",
+        hardware="real-sglang",
+        routing_policy="real",
+        routing_pool="sglang",
+        scheduling_policy="real",
+        scheduling_action="observed",
+        fallback_elapsed_seconds=collection_elapsed,
+        patched_metrics=patched_metrics,
     )
-    patched_prompt_tokens = _as_int(patched_summary.get("prompt_tokens_total"))
-    patched_generated_tokens = _as_int(patched_summary.get("completion_tokens_total"))
-    if patched_prompt_tokens:
-        requests["prompt_tokens"] = patched_prompt_tokens
-    if patched_generated_tokens:
-        requests["generated_tokens"] = patched_generated_tokens
-    fallback_elapsed = max(
-        collection_elapsed,
-        requests["request_latency_s"],
-        duration if not requests["generated_tokens"] else 0.000001,
-    )
-    elapsed, avg_power, energy = _power_summary(events, fallback_elapsed)
-    generated_tokens = int(requests["generated_tokens"])
-    tokens_per_second = formulas.safe_div(generated_tokens, elapsed)
-    tokens_per_watt = formulas.safe_div(tokens_per_second, avg_power)
-    tokens_per_joule = formulas.safe_div(generated_tokens, energy)
-    quality = float((config.get("model", {}) or {}).get("quality_score", 1.0))
-    row = {
-        "experiment": (config.get("experiment", {}) or {}).get("name", "aether-sglang"),
-        "backend": "sglang",
-        "scenario_id": "sglang-real",
-        "model": (config.get("model", {}) or {}).get("name", "unknown-model"),
-        "hardware": "real-sglang",
-        "routing_policy": "real",
-        "routing_pool": "sglang",
-        "scheduling_policy": "real",
-        "scheduling_action": "observed",
-        "prompt_tokens": int(requests["prompt_tokens"]),
-        "generated_tokens": generated_tokens,
-        "elapsed_seconds": round(elapsed, 6),
-        "energy_j": round(energy, 6),
-        "avg_power_w": round(avg_power, 6),
-        "tokens_per_second": round(tokens_per_second, 6),
-        "tokens_per_watt": round(tokens_per_watt, 9),
-        "tokens_per_joule": round(tokens_per_joule, 9),
-        "quality_score": quality,
-        "quality_normalized_ipw": round(quality * tokens_per_joule, 9),
-        "ttft_ms": requests["ttft_ms"],
-        "tbt_ms": requests["tbt_ms"],
-    }
     write_csv([row], str(output_dir / "summary.csv"))
     write_jsonl(events, str(output_dir / "events.jsonl"))
     with (output_dir / "command.json").open("w", encoding="utf-8") as handle:

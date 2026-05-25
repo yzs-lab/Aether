@@ -9,6 +9,24 @@ from . import formulas
 from .config import as_list, experiment_name
 
 
+class SimulationBackend:
+    """Base class for pluggable performance simulators."""
+
+    name = "base"
+
+    def simulate(self, config: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+
+class GreenServeSimulationBackend(SimulationBackend):
+    """Default GreenServe/IPW formula-led simulator."""
+
+    name = "greensserve"
+
+    def simulate(self, config: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        return _simulate_greensserve(config)
+
+
 def _first(items: Iterable[Dict[str, Any]], default: Dict[str, Any]) -> Dict[str, Any]:
     for item in items:
         return dict(item)
@@ -116,7 +134,15 @@ def _scheduler_overhead(
     }
 
 
-def simulate(config: Mapping[str, Any]) -> List[Dict[str, Any]]:
+def simulate(
+    config: Mapping[str, Any],
+    backend: SimulationBackend | None = None,
+) -> List[Dict[str, Any]]:
+    selected_backend = backend or GreenServeSimulationBackend()
+    return selected_backend.simulate(config)
+
+
+def _simulate_greensserve(config: Mapping[str, Any]) -> List[Dict[str, Any]]:
     model = _model_profile(config)
     workload = _workload(config)
     sweeps = _sweeps(config, workload)

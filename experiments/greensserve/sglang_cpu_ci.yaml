@@ -29,6 +29,8 @@ sglang:
 measurement:
   duration_seconds: 1
   sample_hz: 1
+  hardware_backend: cpu
+  cpu_power_w: 35
   nvml_enabled: false
   health_timeout_seconds: 240
   request_timeout_seconds: 120
