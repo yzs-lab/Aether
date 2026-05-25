@@ -26,6 +26,79 @@ metrics patch, launches `python -m sglang.launch_server --device cpu
 `aether launch --backend sglang`, collects `/aether/metrics`, and prints
 `summary.csv`, `events.jsonl`, `sglang_aether_metrics.json`, and `sglang.log`.
 
+## Documentation Map
+
+Treat `AGENTS.md` as the maintainer handoff and routing guide. It should point
+to the authoritative project docs instead of duplicating long explanations.
+When code behavior changes, update the relevant doc below in the same PR.
+
+- `README.md` is the user-facing entry point. Keep install commands, CLI
+  examples, config examples, and the high-level CPU/GPU support story there.
+- `docs/greensserve-ipw-plan.md` is the compact product/research brief. Keep
+  the GreenServe system components there: context-aware routing pools, KV-cache
+  compression, prefill/decode energy asymmetry, recompute-vs-swap scheduling,
+  and SGLang metrics collection.
+- `docs/formula-ledger.md` is the formula source of truth for simulation math.
+  Update it whenever `src/aether/formulas.py` or `src/aether/simulator.py`
+  changes any equation, default, unit, or scheduling score.
+- `docs/architecture.md` is the system boundary and data-flow map. Update it
+  when package layout, CLI command flow, normalized output schema, or backend
+  boundaries change.
+- `docs/mock-validation.md` describes the deterministic CPU correctness gate.
+  Update it when `src/aether/measurement/mock.py`, mock events, expected files,
+  or golden-output assumptions change.
+- `docs/real-data-collection.md` is the operational runbook for real SGLang
+  CPU/GPU measurement. Keep Linux setup, macOS limitations, patched metrics
+  flags, endpoint behavior, NVML notes, and output artifacts there.
+- `patches/sglang/v0.5.12/README.md` is the patch-series-local guide. Keep it
+  aligned with the patch files and use it for SGLang-specific apply commands,
+  scope constraints, and upstream-version notes.
+- `experiments/greensserve/*.yaml` are executable examples. Keep them in sync
+  with README snippets, docs runbooks, and tests.
+- `.github/workflows/ci.yml` is the executable proof for docs that claim a flow
+  works in CI. If a doc says the SGLang CPU path is validated, the workflow
+  should actually install SGLang, apply the patch, run Aether, and assert the
+  patched metrics payload.
+
+## Change Routing
+
+- Formula or GreenServe model changes: update `docs/formula-ledger.md`,
+  `docs/greensserve-ipw-plan.md` if the conceptual model changed, simulation
+  tests, and at least one config example if new inputs are required.
+- CLI/config changes: update `README.md`, `docs/architecture.md`,
+  `experiments/greensserve/*.yaml`, config tests, and CLI tests.
+- Normalized output schema changes: update `docs/architecture.md`,
+  `docs/mock-validation.md`, `docs/real-data-collection.md`, result-writer
+  tests, and any CI assertions that parse output files.
+- Mock backend changes: update `docs/mock-validation.md` and keep the mock
+  path deterministic on CPU.
+- Real SGLang backend changes: update `docs/real-data-collection.md`,
+  `experiments/greensserve/sglang_cpu_ci.yaml`,
+  `experiments/greensserve/sglang_real.yaml`, and the dedicated SGLang CI job.
+- SGLang patch changes: update `patches/sglang/v0.5.12/README.md`,
+  `docs/real-data-collection.md`, the patch apply checks, and the CI assertions
+  that verify `/aether/metrics`.
+
+## Current SGLang Metrics Patch Context
+
+The active patch is
+`patches/sglang/v0.5.12/0001-aether-ipw-metrics-scaffold.patch`. Despite the
+name, it now implements the first real metrics path for Aether:
+
+- SGLang flags: `--enable-aether-metrics` and
+  `--aether-metrics-retain-events`.
+- SGLang endpoint: `GET /aether/metrics`.
+- Aether collection: `src/aether/measurement/sglang.py` reads the endpoint,
+  emits an `sglang_aether_metrics` event, writes `sglang_aether_metrics.json`,
+  and can require the endpoint with `measurement.require_sglang_metrics: true`.
+- CI proof: the `SGLang CPU launch` job installs patched SGLang on Linux CPU,
+  runs `aether launch --backend sglang`, and asserts the metrics summary has at
+  least one request and generated tokens.
+
+Keep this patch metrics-only. Do not add scheduler, recompute/swap, DVFS, model
+execution, or routing behavior changes without a new design doc and matching
+tests.
+
 ## Network Proxy Preference
 
 When a download or dependency fetch appears stuck or blocked by network
