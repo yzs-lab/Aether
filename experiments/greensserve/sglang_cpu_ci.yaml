@@ -22,6 +22,8 @@ sglang:
     load-format: dummy
     tensor-parallel-size: 1
     disable-overlap-schedule: true
+    enable-aether-metrics: true
+    aether-metrics-retain-events: 32
   extra_args: []
 
 measurement:
@@ -30,6 +32,8 @@ measurement:
   nvml_enabled: false
   health_timeout_seconds: 240
   request_timeout_seconds: 120
+  sglang_metrics_endpoint: /aether/metrics
+  require_sglang_metrics: true
   requests:
     - endpoint: /generate
       payload:

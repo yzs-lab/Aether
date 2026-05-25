@@ -7,9 +7,10 @@ validates the same result schema used by future SGLang/GPU runs.
 
 The GitHub CI is CPU-only. It uses uv with Python 3.13, runs tests and smoke
 commands, verifies the SGLang metrics patch applies to the pinned submodule,
-and has a dedicated job that installs SGLang's CPU source build, launches an
-actual SGLang CPU server, sends an Aether-managed request, and prints the
-normalized outputs.
+and has a dedicated job that installs SGLang's CPU source build, applies the
+Aether metrics patch, launches an actual SGLang CPU server, sends an
+Aether-managed request, reads `/aether/metrics`, and prints the normalized
+outputs.
 
 Real GPU experiments are kept separate. The SGLang backend is present, but GPU
 power sampling only runs when SGLang, CUDA/NVML, and a workload are available
@@ -79,12 +80,26 @@ sglang:
     port: 30000
     context-length: 8192
     enable-metrics: true
+    enable-aether-metrics: true
+    aether-metrics-retain-events: 4096
   extra_args:
     - --trust-remote-code
 ```
 
 Booleans set to `true` are rendered as flags; `false` and `null` are omitted.
 All other values are rendered as `--flag value`.
+
+The patched SGLang CPU CI config enables:
+
+```yaml
+sglang:
+  args:
+    enable-aether-metrics: true
+    aether-metrics-retain-events: 32
+measurement:
+  sglang_metrics_endpoint: /aether/metrics
+  require_sglang_metrics: true
+```
 
 ## Real Data Collection
 

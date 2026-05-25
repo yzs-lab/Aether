@@ -18,12 +18,12 @@ source install from the pinned `third_party/sglang` submodule:
 6. run `aether launch --backend sglang` with
    `experiments/greensserve/sglang_cpu_ci.yaml`
 
-The CI log prints `command.json`, `summary.csv`, `events.jsonl`, and the tail
-of `sglang.log`. The run is intentionally tiny: it uses
+The CI log prints `command.json`, `summary.csv`, `events.jsonl`,
+`sglang_aether_metrics.json`, and the tail of `sglang.log`. The run is intentionally tiny: it uses
 `hf-internal-testing/tiny-random-LlamaForCausalLM`, `--load-format dummy`,
-`--device cpu`, and a two-token `/generate` request. This validates Aether's
-real launcher, health polling, request path, metric extraction, and normalized
-result writer without requiring a GPU.
+`--device cpu`, `--enable-aether-metrics`, and a two-token `/generate` request.
+This validates Aether's real launcher, health polling, request path, patched
+SGLang metric extraction, and normalized result writer without requiring a GPU.
 
 The same CPU path can be run manually on Linux:
 
@@ -42,6 +42,15 @@ export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu
 export LD_PRELOAD=$PWD/.venv/lib/libiomp5.so:/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4:/usr/lib/x86_64-linux-gnu/libtbbmalloc.so.2
 uv run aether launch --backend sglang --config experiments/greensserve/sglang_cpu_ci.yaml --out results/sglang-cpu-ci
 ```
+
+The current SGLang patch adds:
+
+- `--enable-aether-metrics`
+- `--aether-metrics-retain-events`
+- `GET /aether/metrics`
+- request completion hooks that record prompt tokens, completion tokens,
+  total tokens, E2E latency, TTFT, TBT, finish reason, server settings,
+  scheduler info, and internal state snapshots
 
 ## Prepare SGLang
 
@@ -97,7 +106,9 @@ The SGLang backend will:
 3. wait for `/health`
 4. sample NVML power when `measurement.nvml_enabled` is true
 5. run configured HTTP requests or an optional workload command
-6. write normalized `summary.csv` and `events.jsonl`
+6. collect patched SGLang metrics from `/aether/metrics` when configured
+7. write normalized `summary.csv`, `events.jsonl`, and
+   `sglang_aether_metrics.json`
 
 ## Data To Record
 

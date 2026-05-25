@@ -1,52 +1,335 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Aether Contributors <aether@yezhisheng.me>
-Date: Mon, 25 May 2026 00:00:00 +0000
-Subject: [PATCH] docs: add Aether IPW metrics scaffold
-
----
- AETHER_IPW_METRICS.md | 32 ++++++++++++++++++++++++++++++++
- 1 file changed, 32 insertions(+)
- create mode 100644 AETHER_IPW_METRICS.md
-
 diff --git a/AETHER_IPW_METRICS.md b/AETHER_IPW_METRICS.md
 new file mode 100644
-index 0000000000..1111111111
+index 000000000..bc5f00dcf
 --- /dev/null
 +++ b/AETHER_IPW_METRICS.md
-@@ -0,0 +1,32 @@
-+# Aether IPW Metrics Scaffold
+@@ -0,0 +1,34 @@
++# Aether IPW Metrics Patch
 +
-+This file is added by the Aether metrics-only patch scaffold. It does not
-+change SGLang behavior.
++This metrics-only patch adds a small Aether collection surface for
++GreenServe-style intelligence-per-watt experiments. It does not change
++SGLang scheduling, model execution, recompute/swap policy, or DVFS behavior.
 +
-+Future metrics patches should expose the following data without changing
-+scheduler, DVFS, or request execution behavior:
++## Runtime Flags
 +
-+- per-GPU NVML power samples, clocks, utilization, and memory usage
-+- per-request prompt token count, generated token count, TTFT, TBT, and E2E
-+  latency
-+- KV cache allocation, free, compression ratio, and effective bytes per token
-+- preemption events, recompute events, swap in/out events, and transferred bytes
-+- SGLang process metadata: model, tensor parallel size, max context, and port
++- `--enable-aether-metrics`: enable the JSON metrics endpoint.
++- `--aether-metrics-retain-events N`: keep the last `N` request metric events
++  in memory for experiment collection.
 +
-+Aether normalizes these values into:
++## Endpoint
 +
-+- `summary.csv`
-+- `events.jsonl`
++When enabled, `GET /aether/metrics` returns:
 +
-+The intended first real implementation points are:
++- `server`: model path, device, context length, tensor/data parallel size, KV
++  cache dtype, and max token pool settings.
++- `summary`: request count, prompt token total, completion token total, total
++  token total, aggregate E2E latency, average E2E latency, average TTFT, and
++  average TBT when SGLang exposes those fields.
++- `events`: recent request-level metric events with token counts, latency, and
++  finish reason.
++- `scheduler_info` and `internal_states`: existing SGLang scheduler/runtime
++  snapshots, included so Aether can correlate request metrics with KV capacity
++  and runtime state.
 +
-+1. server launch args for enabling Aether metrics
-+2. metrics registry counters and gauges
-+3. scheduler event hooks
-+4. KV cache pool event hooks
-+5. JSONL export for per-request and per-iteration events
++## Patch Constraints
 +
-+Patch constraints:
-+
-+- no scheduling behavior changes
++- metrics are disabled by default
++- no scheduler behavior changes
 +- no DVFS behavior changes
 +- no extra dependencies in SGLang's default import path
-+- metrics disabled by default
--- 
-2.39.0
++- CPU mode works in GitHub Actions for Aether integration tests
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 80081fc57..e7d38c3e8 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -152,6 +152,10 @@ from sglang.srt.managers.multi_tokenizer_mixin import (
+ from sglang.srt.managers.template_manager import TemplateManager
+ from sglang.srt.managers.tokenizer_manager import ServerStatus, TokenizerManager
+ from sglang.srt.observability.func_timer import enable_func_timer
++from sglang.srt.observability.aether_metrics import (
++    configure_aether_metrics,
++    snapshot_aether_metrics,
++)
+ from sglang.srt.observability.trace import (
+     process_tracing_init,
+     set_global_trace_level,
+@@ -302,6 +306,7 @@ async def lifespan(fast_api_app: FastAPI):
+     if server_args.enable_metrics:
+         add_prometheus_middleware(app)
+         enable_func_timer()
++    configure_aether_metrics(server_args)
+ 
+     # Init tracing
+     if server_args.enable_trace:
+@@ -644,6 +649,18 @@ async def server_info():
+     }
+ 
+ 
++@app.get("/aether/metrics")
++async def aether_metrics():
++    """Return Aether IPW metrics collected by the metrics-only patch."""
++    internal_states: List[Dict[Any, Any]] = (
++        await _global_state.tokenizer_manager.get_internal_state()
++    )
++    return snapshot_aether_metrics(
++        scheduler_info=_global_state.scheduler_info,
++        internal_states=internal_states,
++    )
++
++
+ @app.get("/get_load")
+ async def get_load():
+     """Get load metrics (deprecated - use /v1/loads instead).
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 6375a1d8b..69fa2dbd4 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -83,6 +83,7 @@ from sglang.srt.managers.tokenizer_manager_score_mixin import (
+ )
+ from sglang.srt.observability.cpu_monitor import start_cpu_monitor_thread
+ from sglang.srt.observability.metrics_collector import TokenizerMetricsCollector
++from sglang.srt.observability.aether_metrics import record_aether_request
+ from sglang.srt.observability.req_time_stats import (
+     APIServerReqTimeStats,
+     convert_time_to_realtime,
+@@ -1349,6 +1350,7 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                     out,
+                     request=request,
+                 )
++                record_aether_request(obj, out)
+ 
+                 if self.request_metrics_exporter_manager.exporter_enabled():
+                     asyncio.create_task(
+diff --git a/python/sglang/srt/observability/aether_metrics.py b/python/sglang/srt/observability/aether_metrics.py
+new file mode 100644
+index 000000000..9eea4627a
+--- /dev/null
++++ b/python/sglang/srt/observability/aether_metrics.py
+@@ -0,0 +1,196 @@
++"""Aether metrics registry for IPW experiment collection.
++
++This module is intentionally lightweight and disabled unless
++``--enable-aether-metrics`` is passed. It records request-level counters from
++already-produced SGLang response metadata and exposes a JSON snapshot for
++external experiment runners.
++"""
++
++from __future__ import annotations
++
++import time
++from collections import deque
++from threading import Lock
++from typing import Any, Deque, Dict, Mapping, Optional
++
++from sglang.srt.constants import HEALTH_CHECK_RID_PREFIX
++
++
++def _as_int(value: Any) -> int:
++    if value is None:
++        return 0
++    try:
++        return int(value)
++    except (TypeError, ValueError):
++        return 0
++
++
++def _as_float(value: Any) -> float:
++    if value is None:
++        return 0.0
++    try:
++        return float(value)
++    except (TypeError, ValueError):
++        return 0.0
++
++
++def _truthy(value: Any) -> bool:
++    return bool(value)
++
++
++class AetherMetricsRegistry:
++    def __init__(self) -> None:
++        self._lock = Lock()
++        self.reset()
++
++    def reset(self) -> None:
++        self.enabled = False
++        self.started_at_unix_s = time.time()
++        self.server: Dict[str, Any] = {}
++        self.events: Deque[Dict[str, Any]] = deque(maxlen=1024)
++        self.request_count = 0
++        self.prompt_tokens_total = 0
++        self.completion_tokens_total = 0
++        self.total_tokens_total = 0
++        self.e2e_latency_sum_s = 0.0
++        self.ttft_sum_s = 0.0
++        self.tbt_sum_s = 0.0
++        self.last_request_unix_s: Optional[float] = None
++
++    def configure(self, server_args: Any) -> None:
++        retain_events = max(
++            1, _as_int(getattr(server_args, "aether_metrics_retain_events", 1024))
++        )
++        with self._lock:
++            self.reset()
++            self.enabled = _truthy(getattr(server_args, "enable_aether_metrics", False))
++            self.events = deque(maxlen=retain_events)
++            self.server = {
++                "model_path": getattr(server_args, "model_path", None),
++                "served_model_name": getattr(server_args, "served_model_name", None),
++                "tokenizer_path": getattr(server_args, "tokenizer_path", None),
++                "device": getattr(server_args, "device", None),
++                "context_length": getattr(server_args, "context_length", None),
++                "max_total_tokens": getattr(server_args, "max_total_tokens", None),
++                "tensor_parallel_size": getattr(server_args, "tp_size", None),
++                "data_parallel_size": getattr(server_args, "dp_size", None),
++                "kv_cache_dtype": getattr(server_args, "kv_cache_dtype", None),
++                "enable_metrics": getattr(server_args, "enable_metrics", None),
++            }
++
++    def record_request(self, obj: Any, out_dict: Mapping[str, Any]) -> None:
++        if not self.enabled:
++            return
++
++        rid = getattr(obj, "rid", None)
++        if isinstance(rid, str) and HEALTH_CHECK_RID_PREFIX in rid:
++            return
++        if not getattr(obj, "log_metrics", True):
++            return
++
++        meta_info = out_dict.get("meta_info", {})
++        if not isinstance(meta_info, Mapping):
++            meta_info = {}
++
++        prompt_tokens = _as_int(
++            meta_info.get("prompt_tokens") or meta_info.get("input_tokens")
++        )
++        completion_tokens = _as_int(
++            meta_info.get("completion_tokens") or meta_info.get("output_tokens")
++        )
++        if completion_tokens == 0 and isinstance(out_dict.get("output_ids"), list):
++            completion_tokens = len(out_dict["output_ids"])
++        total_tokens = (
++            _as_int(meta_info.get("total_tokens")) or prompt_tokens + completion_tokens
++        )
++        e2e_latency_s = _as_float(
++            meta_info.get("e2e_latency") or meta_info.get("latency")
++        )
++        ttft_s = _as_float(
++            meta_info.get("ttft")
++            or meta_info.get("time_to_first_token")
++            or meta_info.get("first_token_latency")
++            or meta_info.get("first_token_latency_s")
++        )
++        tbt_s = _as_float(
++            meta_info.get("tbt")
++            or meta_info.get("inter_token_latency")
++            or meta_info.get("decode_token_latency")
++        )
++        now = time.time()
++        event = {
++            "type": "request",
++            "timestamp_unix_s": now,
++            "rid": rid,
++            "prompt_tokens": prompt_tokens,
++            "completion_tokens": completion_tokens,
++            "total_tokens": total_tokens,
++            "e2e_latency_s": e2e_latency_s,
++            "ttft_s": ttft_s,
++            "tbt_s": tbt_s,
++            "finish_reason": meta_info.get("finish_reason"),
++        }
++
++        with self._lock:
++            self.request_count += 1
++            self.prompt_tokens_total += prompt_tokens
++            self.completion_tokens_total += completion_tokens
++            self.total_tokens_total += total_tokens
++            self.e2e_latency_sum_s += e2e_latency_s
++            self.ttft_sum_s += ttft_s
++            self.tbt_sum_s += tbt_s
++            self.last_request_unix_s = now
++            self.events.append(event)
++
++    def snapshot(
++        self,
++        scheduler_info: Optional[Mapping[str, Any]] = None,
++        internal_states: Optional[Any] = None,
++    ) -> Dict[str, Any]:
++        with self._lock:
++            request_count = self.request_count
++            summary = {
++                "request_count": request_count,
++                "prompt_tokens_total": self.prompt_tokens_total,
++                "completion_tokens_total": self.completion_tokens_total,
++                "total_tokens_total": self.total_tokens_total,
++                "e2e_latency_sum_s": round(self.e2e_latency_sum_s, 9),
++                "e2e_latency_avg_s": round(self.e2e_latency_sum_s / request_count, 9)
++                if request_count
++                else 0.0,
++                "ttft_avg_s": round(self.ttft_sum_s / request_count, 9)
++                if request_count
++                else 0.0,
++                "tbt_avg_s": round(self.tbt_sum_s / request_count, 9)
++                if request_count
++                else 0.0,
++                "last_request_unix_s": self.last_request_unix_s,
++            }
++            return {
++                "schema_version": 1,
++                "enabled": self.enabled,
++                "started_at_unix_s": self.started_at_unix_s,
++                "server": dict(self.server),
++                "summary": summary,
++                "events": list(self.events),
++                "scheduler_info": dict(scheduler_info or {}),
++                "internal_states": internal_states or [],
++            }
++
++
++_REGISTRY = AetherMetricsRegistry()
++
++
++def configure_aether_metrics(server_args: Any) -> None:
++    _REGISTRY.configure(server_args)
++
++
++def record_aether_request(obj: Any, out_dict: Mapping[str, Any]) -> None:
++    _REGISTRY.record_request(obj, out_dict)
++
++
++def snapshot_aether_metrics(
++    scheduler_info: Optional[Mapping[str, Any]] = None,
++    internal_states: Optional[Any] = None,
++) -> Dict[str, Any]:
++    return _REGISTRY.snapshot(scheduler_info=scheduler_info, internal_states=internal_states)
+diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
+index 173bdbbf4..4838d6611 100644
+--- a/python/sglang/srt/server_args.py
++++ b/python/sglang/srt/server_args.py
+@@ -484,6 +484,8 @@ class ServerArgs:
+     grpc_http_sidecar_port: Optional[int] = None
+     enable_mfu_metrics: bool = False
+     enable_metrics_for_all_schedulers: bool = False
++    enable_aether_metrics: bool = False
++    aether_metrics_retain_events: int = 1024
+     tokenizer_metrics_custom_labels_header: str = "x-custom-labels"
+     tokenizer_metrics_allowed_custom_labels: Optional[List[str]] = None
+     extra_metric_labels: Optional[Dict[str, str]] = None
+@@ -5280,6 +5282,17 @@ class ServerArgs:
+             "to record request metrics separately. This is especially useful when dp_attention is enabled, as "
+             "otherwise all metrics appear to come from TP 0.",
+         )
++        parser.add_argument(
++            "--enable-aether-metrics",
++            action="store_true",
++            help="Enable Aether IPW JSON metrics at /aether/metrics. Metrics-only; does not change scheduling or execution behavior.",
++        )
++        parser.add_argument(
++            "--aether-metrics-retain-events",
++            type=int,
++            default=ServerArgs.aether_metrics_retain_events,
++            help="Number of recent Aether request metric events retained in memory.",
++        )
+         parser.add_argument(
+             "--tokenizer-metrics-custom-labels-header",
+             type=str,

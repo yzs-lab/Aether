@@ -143,9 +143,29 @@ def _post_json(url: str, payload: Mapping[str, Any], timeout_s: float) -> Tuple[
             return int(response.status), parsed
     except HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
-        raise SGLangMeasurementError("SGLang request failed with HTTP %s: %s" % (exc.code, raw[-2000:])) from exc
+        raise SGLangMeasurementError(
+            "SGLang request failed with HTTP %s: %s" % (exc.code, raw[-2000:])
+        ) from exc
     except (OSError, URLError, json.JSONDecodeError) as exc:
         raise SGLangMeasurementError("SGLang request failed: %s" % exc) from exc
+
+
+def _get_json(url: str, timeout_s: float) -> Tuple[int, Dict[str, Any]]:
+    request = Request(url, headers={"Accept": "application/json"}, method="GET")
+    try:
+        with urlopen(request, timeout=timeout_s) as response:
+            raw = response.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else {}
+            if not isinstance(parsed, dict):
+                parsed = {"response": parsed}
+            return int(response.status), parsed
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise SGLangMeasurementError(
+            "SGLang metrics request failed with HTTP %s: %s" % (exc.code, raw[-2000:])
+        ) from exc
+    except (OSError, URLError, json.JSONDecodeError) as exc:
+        raise SGLangMeasurementError("SGLang metrics request failed: %s" % exc) from exc
 
 
 def _as_int(value: Any) -> int:
@@ -197,7 +217,9 @@ def _extract_response_metrics(response: Mapping[str, Any]) -> Dict[str, Any]:
         if not isinstance(meta, dict):
             meta = {}
         prompt_tokens += _as_int(meta.get("prompt_tokens") or meta.get("input_tokens"))
-        generated_tokens += _as_int(meta.get("completion_tokens") or meta.get("output_tokens"))
+        generated_tokens += _as_int(
+            meta.get("completion_tokens") or meta.get("output_tokens")
+        )
         total_tokens += _as_int(meta.get("total_tokens"))
         latency = _as_float(meta.get("e2e_latency") or meta.get("latency"))
         if latency > 0:
@@ -210,7 +232,11 @@ def _extract_response_metrics(response: Mapping[str, Any]) -> Dict[str, Any]:
         )
         if ttft > 0:
             ttfts.append(ttft)
-        tbt = _as_float(meta.get("tbt") or meta.get("inter_token_latency") or meta.get("decode_token_latency"))
+        tbt = _as_float(
+            meta.get("tbt")
+            or meta.get("inter_token_latency")
+            or meta.get("decode_token_latency")
+        )
         if tbt > 0:
             tbts.append(tbt)
 
@@ -258,7 +284,9 @@ def _run_configured_requests(
             endpoint = "/" + endpoint
         payload = item.get("payload", {})
         if not isinstance(payload, dict):
-            raise SGLangMeasurementError("measurement.requests[%s].payload must be a mapping" % index)
+            raise SGLangMeasurementError(
+                "measurement.requests[%s].payload must be a mapping" % index
+            )
         started = time.perf_counter()
         status, response = _post_json(base_url + endpoint, payload, request_timeout)
         latency = time.perf_counter() - started
@@ -276,18 +304,74 @@ def _run_configured_requests(
         events.append(event)
 
 
+def _collect_sglang_metrics(
+    base_url: str,
+    measurement: Mapping[str, Any],
+    events: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    endpoint = measurement.get("sglang_metrics_endpoint", "/aether/metrics")
+    if endpoint in (None, False):
+        return {}
+    endpoint = str(endpoint)
+    if not endpoint.startswith("/"):
+        endpoint = "/" + endpoint
+    require_metrics = bool(measurement.get("require_sglang_metrics", False))
+    request_timeout = float(measurement.get("request_timeout_seconds", 120))
+    try:
+        status, payload = _get_json(base_url + endpoint, request_timeout)
+    except SGLangMeasurementError:
+        if require_metrics:
+            raise
+        events.append(
+            {
+                "type": "sglang_aether_metrics",
+                "backend": "sglang",
+                "endpoint": endpoint,
+                "ok": False,
+            }
+        )
+        return {}
+
+    event = {
+        "type": "sglang_aether_metrics",
+        "backend": "sglang",
+        "endpoint": endpoint,
+        "status": status,
+        "ok": bool(payload.get("enabled", False)),
+        "payload": payload,
+    }
+    events.append(event)
+    if require_metrics and not event["ok"]:
+        raise SGLangMeasurementError(
+            "SGLang Aether metrics endpoint is present but disabled"
+        )
+    return payload
+
+
 def _request_summary(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     request_events = [event for event in events if event.get("type") == "request"]
     prompt_tokens = sum(_as_int(event.get("prompt_tokens")) for event in request_events)
-    generated_tokens = sum(_as_int(event.get("generated_tokens")) for event in request_events)
+    generated_tokens = sum(
+        _as_int(event.get("generated_tokens")) for event in request_events
+    )
     request_latency = sum(_as_float(event.get("latency_s")) for event in request_events)
-    ttft_values = [_as_float(event.get("ttft_ms")) for event in request_events if _as_float(event.get("ttft_ms")) > 0]
-    tbt_values = [_as_float(event.get("tbt_ms")) for event in request_events if _as_float(event.get("tbt_ms")) > 0]
+    ttft_values = [
+        _as_float(event.get("ttft_ms"))
+        for event in request_events
+        if _as_float(event.get("ttft_ms")) > 0
+    ]
+    tbt_values = [
+        _as_float(event.get("tbt_ms"))
+        for event in request_events
+        if _as_float(event.get("tbt_ms")) > 0
+    ]
     return {
         "prompt_tokens": prompt_tokens,
         "generated_tokens": generated_tokens,
         "request_latency_s": request_latency,
-        "ttft_ms": round(sum(ttft_values) / len(ttft_values), 6) if ttft_values else 0.0,
+        "ttft_ms": round(sum(ttft_values) / len(ttft_values), 6)
+        if ttft_values
+        else 0.0,
         "tbt_ms": round(sum(tbt_values) / len(tbt_values), 6) if tbt_values else 0.0,
     }
 
@@ -308,12 +392,15 @@ def run_sglang(config: Mapping[str, Any], out_dir: str) -> Tuple[Dict[str, Any],
     events: List[Dict[str, Any]] = [{"type": "launch", "command": command}]
     sampler = _NvmlSampler(sample_hz, events) if nvml_enabled else None
     collection_elapsed = duration
+    patched_metrics: Dict[str, Any] = {}
     with log_path.open("w", encoding="utf-8") as log_handle:
         process = subprocess.Popen(command, stdout=log_handle, stderr=subprocess.STDOUT)
         try:
             health_url = _health_url(config)
             if not _wait_for_health(health_url, timeout):
-                raise SGLangMeasurementError("SGLang did not become healthy at %s" % health_url)
+                raise SGLangMeasurementError(
+                    "SGLang did not become healthy at %s" % health_url
+                )
             events.append({"type": "health", "url": health_url, "ok": True})
             if sampler is not None:
                 sampler.start()
@@ -324,8 +411,12 @@ def run_sglang(config: Mapping[str, Any], out_dir: str) -> Tuple[Dict[str, Any],
                 _run_configured_requests(_server_base_url(config), measurement, events)
             elif workload_command:
                 if not isinstance(workload_command, list):
-                    raise SGLangMeasurementError("measurement.workload_command must be a list of command arguments")
-                workload = subprocess.run(workload_command, check=False, capture_output=True, text=True)
+                    raise SGLangMeasurementError(
+                        "measurement.workload_command must be a list of command arguments"
+                    )
+                workload = subprocess.run(
+                    workload_command, check=False, capture_output=True, text=True
+                )
                 events.append(
                     {
                         "type": "workload",
@@ -337,6 +428,9 @@ def run_sglang(config: Mapping[str, Any], out_dir: str) -> Tuple[Dict[str, Any],
             else:
                 time.sleep(duration)
                 events.append({"type": "idle_collection", "duration_seconds": duration})
+            patched_metrics = _collect_sglang_metrics(
+                _server_base_url(config), measurement, events
+            )
             collection_elapsed = max(time.monotonic() - collection_start, 0.000001)
         finally:
             sampler_error = None
@@ -354,7 +448,22 @@ def run_sglang(config: Mapping[str, Any], out_dir: str) -> Tuple[Dict[str, Any],
                 raise sampler_error
 
     requests = _request_summary(events)
-    fallback_elapsed = max(collection_elapsed, requests["request_latency_s"], duration if not requests["generated_tokens"] else 0.000001)
+    patched_summary = (
+        patched_metrics.get("summary", {})
+        if isinstance(patched_metrics.get("summary"), dict)
+        else {}
+    )
+    patched_prompt_tokens = _as_int(patched_summary.get("prompt_tokens_total"))
+    patched_generated_tokens = _as_int(patched_summary.get("completion_tokens_total"))
+    if patched_prompt_tokens:
+        requests["prompt_tokens"] = patched_prompt_tokens
+    if patched_generated_tokens:
+        requests["generated_tokens"] = patched_generated_tokens
+    fallback_elapsed = max(
+        collection_elapsed,
+        requests["request_latency_s"],
+        duration if not requests["generated_tokens"] else 0.000001,
+    )
     elapsed, avg_power, energy = _power_summary(events, fallback_elapsed)
     generated_tokens = int(requests["generated_tokens"])
     tokens_per_second = formulas.safe_div(generated_tokens, elapsed)
@@ -388,4 +497,9 @@ def run_sglang(config: Mapping[str, Any], out_dir: str) -> Tuple[Dict[str, Any],
     write_jsonl(events, str(output_dir / "events.jsonl"))
     with (output_dir / "command.json").open("w", encoding="utf-8") as handle:
         json.dump({"command": command}, handle, indent=2)
+    if patched_metrics:
+        with (output_dir / "sglang_aether_metrics.json").open(
+            "w", encoding="utf-8"
+        ) as handle:
+            json.dump(patched_metrics, handle, indent=2, sort_keys=True)
     return row, events

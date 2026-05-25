@@ -18,6 +18,8 @@ sglang:
     port: 30000
     context-length: 8192
     enable-metrics: true
+    enable-aether-metrics: true
+    aether-metrics-retain-events: 4096
   extra_args: []
 
 measurement:
@@ -25,6 +27,8 @@ measurement:
   sample_hz: 100
   nvml_enabled: true
   health_timeout_seconds: 120
+  sglang_metrics_endpoint: /aether/metrics
+  require_sglang_metrics: true
   workload_command: null
 
 workload:

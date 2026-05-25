@@ -21,9 +21,10 @@ git -C third_party/sglang apply --check ../../patches/sglang/v0.5.12/0001-aether
 
 GitHub CI also runs a real SGLang CPU integration job. It installs SGLang from
 the pinned submodule using SGLang's `pyproject_cpu.toml`, applies the Aether
-metrics patch, launches `python -m sglang.launch_server --device cpu`, sends a
-tiny `/generate` request through `aether launch --backend sglang`, and prints
-`summary.csv`, `events.jsonl`, and `sglang.log`.
+metrics patch, launches `python -m sglang.launch_server --device cpu
+--enable-aether-metrics`, sends a tiny `/generate` request through
+`aether launch --backend sglang`, collects `/aether/metrics`, and prints
+`summary.csv`, `events.jsonl`, `sglang_aether_metrics.json`, and `sglang.log`.
 
 ## Network Proxy Preference
 
@@ -51,8 +52,10 @@ ALL_PROXY=socks5://127.0.0.1:10808
 - Store experiment outputs under `results/`; this directory is ignored.
 - Keep SGLang work under `third_party/sglang` and patch files under
   `patches/sglang/v0.5.12/`.
-- SGLang patches in this bootstrap are metrics-only. Do not add scheduler,
-  recompute/swap, or DVFS behavior changes without a new design doc.
+- SGLang patches in this bootstrap are metrics-only. The current patch adds
+  `--enable-aether-metrics`, `--aether-metrics-retain-events`, and
+  `GET /aether/metrics`. Do not add scheduler, recompute/swap, or DVFS
+  behavior changes without a new design doc.
 - SGLang `v0.5.12` does not fully install on local macOS arm64 in this
   workspace because `sgl-deep-gemm==0.1.0` provides Linux wheels only. Use
   macOS for patch-apply and Aether mock validation; use GitHub Actions or Linux
