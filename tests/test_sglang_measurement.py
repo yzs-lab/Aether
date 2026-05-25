@@ -1,5 +1,6 @@
 import aether.measurement.sglang as sglang_measurement
 from aether.measurement.sglang import (
+    _collect_sglang_metrics,
     _extract_response_metrics,
     _request_summary,
     _run_configured_requests,
@@ -86,3 +87,45 @@ def test_run_configured_requests_posts_json_and_records_metrics(monkeypatch):
     assert events[0]["prompt_tokens"] == 7
     assert events[0]["generated_tokens"] == 2
     assert _request_summary(events)["generated_tokens"] == 2
+
+
+def test_collect_sglang_metrics_records_patched_endpoint(monkeypatch):
+    def fake_get_json(url, timeout_s):
+        assert url == "http://127.0.0.1:30080/aether/metrics"
+        assert timeout_s == 9.0
+        return (
+            200,
+            {
+                "enabled": True,
+                "summary": {
+                    "request_count": 1,
+                    "prompt_tokens_total": 7,
+                    "completion_tokens_total": 2,
+                },
+                "events": [],
+            },
+        )
+
+    monkeypatch.setattr(sglang_measurement, "_get_json", fake_get_json)
+    events = []
+    payload = _collect_sglang_metrics(
+        "http://127.0.0.1:30080",
+        {
+            "sglang_metrics_endpoint": "/aether/metrics",
+            "request_timeout_seconds": 9,
+            "require_sglang_metrics": True,
+        },
+        events,
+    )
+
+    assert payload["summary"]["completion_tokens_total"] == 2
+    assert events == [
+        {
+            "type": "sglang_aether_metrics",
+            "backend": "sglang",
+            "endpoint": "/aether/metrics",
+            "status": 200,
+            "ok": True,
+            "payload": payload,
+        }
+    ]

@@ -81,6 +81,7 @@ jobs:
         run: |
           git -C third_party/sglang apply ../../patches/sglang/v0.5.12/0001-aether-ipw-metrics-scaffold.patch
           test -f third_party/sglang/AETHER_IPW_METRICS.md
+          test -f third_party/sglang/python/sglang/srt/observability/aether_metrics.py
 
       - name: Install SGLang CPU from pinned submodule
         run: |
@@ -98,6 +99,7 @@ jobs:
         run: |
           uv run aether doctor --config experiments/greensserve/sglang_cpu_ci.yaml
           timeout 15m uv run aether launch --backend sglang --config experiments/greensserve/sglang_cpu_ci.yaml --out /tmp/aether-sglang-cpu
+          uv run python -c "import json, pathlib; events=[json.loads(line) for line in pathlib.Path('/tmp/aether-sglang-cpu/events.jsonl').read_text().splitlines()]; metrics=[event for event in events if event.get('type') == 'sglang_aether_metrics']; assert metrics, 'missing patched SGLang Aether metrics event'; summary=metrics[-1]['payload']['summary']; assert summary['request_count'] >= 1, summary; assert summary['completion_tokens_total'] >= 2, summary; print('patched aether metrics ok', summary)"
 
       - name: Show Aether SGLang CPU outputs
         if: always()
@@ -108,6 +110,8 @@ jobs:
           test -f /tmp/aether-sglang-cpu/summary.csv && cat /tmp/aether-sglang-cpu/summary.csv || true
           echo "===== events.jsonl ====="
           test -f /tmp/aether-sglang-cpu/events.jsonl && head -100 /tmp/aether-sglang-cpu/events.jsonl || true
+          echo "===== sglang_aether_metrics.json ====="
+          test -f /tmp/aether-sglang-cpu/sglang_aether_metrics.json && cat /tmp/aether-sglang-cpu/sglang_aether_metrics.json || true
           echo "===== sglang.log tail ====="
           test -f /tmp/aether-sglang-cpu/sglang.log && tail -200 /tmp/aether-sglang-cpu/sglang.log || true
 
