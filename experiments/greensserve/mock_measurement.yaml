@@ -1,0 +1,40 @@
+experiment:
+  name: greensserve-mock
+  tags: [mock, cpu, measurement]
+
+model:
+  name: mock-llm
+  layers: 32
+  kv_heads: 8
+  head_dim: 128
+  kv_dtype_bytes: 2
+  weight_gb: 16
+  quality_score: 0.88
+
+workload:
+  prompt_tokens: 2048
+  generated_tokens: 128
+  target_concurrency: 16
+  preemption_probability: 0.1
+
+measurement:
+  duration_seconds: 5
+  sample_hz: 10
+  mock_seed: 7
+  request_count: 8
+
+simulation:
+  hardware_profiles:
+    - name: mock-gpu
+      gpu_count: 1
+      tdp_w: 300
+      vram_gb: 24
+      gpu_memory_utilization: 0.9
+      pcie_bandwidth_gbps: 32
+      prefill_tps_per_gpu: 4000
+      decode_tps_per_gpu: 220
+  sweeps:
+    context_lengths: [2048]
+    kv_compression_ratios: [1.0]
+    routing_policies: [single_pool]
+    scheduling_policies: [bayesian]

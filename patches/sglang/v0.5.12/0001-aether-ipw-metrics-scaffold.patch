@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aether Contributors <aether@yezhisheng.me>
+Date: Mon, 25 May 2026 00:00:00 +0000
+Subject: [PATCH] docs: add Aether IPW metrics scaffold
+
+---
+ AETHER_IPW_METRICS.md | 32 ++++++++++++++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+ create mode 100644 AETHER_IPW_METRICS.md
+
+diff --git a/AETHER_IPW_METRICS.md b/AETHER_IPW_METRICS.md
+new file mode 100644
+index 0000000000..1111111111
+--- /dev/null
++++ b/AETHER_IPW_METRICS.md
+@@ -0,0 +1,32 @@
++# Aether IPW Metrics Scaffold
++
++This file is added by the Aether metrics-only patch scaffold. It does not
++change SGLang behavior.
++
++Future metrics patches should expose the following data without changing
++scheduler, DVFS, or request execution behavior:
++
++- per-GPU NVML power samples, clocks, utilization, and memory usage
++- per-request prompt token count, generated token count, TTFT, TBT, and E2E
++  latency
++- KV cache allocation, free, compression ratio, and effective bytes per token
++- preemption events, recompute events, swap in/out events, and transferred bytes
++- SGLang process metadata: model, tensor parallel size, max context, and port
++
++Aether normalizes these values into:
++
++- `summary.csv`
++- `events.jsonl`
++
++The intended first real implementation points are:
++
++1. server launch args for enabling Aether metrics
++2. metrics registry counters and gauges
++3. scheduler event hooks
++4. KV cache pool event hooks
++5. JSONL export for per-request and per-iteration events
++
++Patch constraints:
++
++- no scheduling behavior changes
++- no DVFS behavior changes
++- no extra dependencies in SGLang's default import path
++- metrics disabled by default
+-- 
+2.39.0

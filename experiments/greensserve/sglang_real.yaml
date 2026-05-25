@@ -1,0 +1,50 @@
+experiment:
+  name: greensserve-sglang-real
+  tags: [sglang, gpu, real-measurement]
+
+model:
+  name: llama-3.1-8b-instruct
+  layers: 32
+  kv_heads: 8
+  head_dim: 128
+  kv_dtype_bytes: 2
+  weight_gb: 16
+  quality_score: 0.90
+
+sglang:
+  args:
+    model-path: meta-llama/Llama-3.1-8B-Instruct
+    host: 127.0.0.1
+    port: 30000
+    context-length: 8192
+    enable-metrics: true
+  extra_args: []
+
+measurement:
+  duration_seconds: 60
+  sample_hz: 100
+  nvml_enabled: true
+  health_timeout_seconds: 120
+  workload_command: null
+
+workload:
+  prompt_tokens: 4096
+  generated_tokens: 256
+  target_concurrency: 32
+  preemption_probability: 0.0
+
+simulation:
+  hardware_profiles:
+    - name: real-gpu-template
+      gpu_count: 1
+      tdp_w: 700
+      vram_gb: 80
+      gpu_memory_utilization: 0.9
+      pcie_bandwidth_gbps: 64
+      prefill_tps_per_gpu: 9000
+      decode_tps_per_gpu: 320
+  sweeps:
+    context_lengths: [8192]
+    kv_compression_ratios: [1.0]
+    routing_policies: [single_pool]
+    scheduling_policies: [none]

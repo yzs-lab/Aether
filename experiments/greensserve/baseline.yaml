@@ -1,0 +1,44 @@
+experiment:
+  name: greensserve-baseline
+  tags: [simulation, ipw, greensserve]
+
+model:
+  name: llama-3.1-70b
+  layers: 80
+  kv_heads: 8
+  head_dim: 128
+  kv_dtype_bytes: 2
+  weight_gb: 140
+  quality_score: 0.92
+
+workload:
+  prompt_tokens: 4096
+  generated_tokens: 256
+  target_concurrency: 256
+  preemption_probability: 0.05
+  ttft_slo_ms: 2000
+  tbt_slo_ms: 200
+
+simulation:
+  hardware_profiles:
+    - name: h100-sxm-80gb
+      gpu_count: 8
+      tdp_w: 700
+      vram_gb: 80
+      gpu_memory_utilization: 0.9
+      hbm_bandwidth_gbps: 3350
+      pcie_bandwidth_gbps: 64
+      prefill_tps_per_gpu: 9000
+      decode_tps_per_gpu: 320
+  routing_pools:
+    - name: short-context-pool
+      max_context_tokens: 8192
+      gpu_count: 4
+    - name: long-context-pool
+      max_context_tokens: 65536
+      gpu_count: 4
+  sweeps:
+    context_lengths: [4096, 8192, 32768, 65536]
+    kv_compression_ratios: [1.0, 0.5, 0.25]
+    routing_policies: [single_pool, fleetopt]
+    scheduling_policies: [none, recompute, swap, bayesian]

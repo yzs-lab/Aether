@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  cpu:
+    name: CPU checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --group dev --group sglang
+
+      - name: Verify Python
+        run: uv run python --version
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Run simulation smoke
+        run: uv run aether simulate --config experiments/greensserve/baseline.yaml --out /tmp/aether-sim.csv
+
+      - name: Run mock measurement smoke
+        run: uv run aether launch --backend mock --config experiments/greensserve/mock_measurement.yaml --out /tmp/aether-mock
+
+      - name: Verify SGLang submodule pin
+        run: |
+          test "$(git -C third_party/sglang rev-parse HEAD)" = "127b9e3283f7c2a43234b852ff5c9f1796d53624"
+
+      - name: Verify SGLang patch applies
+        run: |
+          git -C third_party/sglang apply --check ../../patches/sglang/v0.5.12/0001-aether-ipw-metrics-scaffold.patch

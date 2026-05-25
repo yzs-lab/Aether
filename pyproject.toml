@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aether"
+version = "0.1.0"
+description = "Aether: simulation and measurement tooling for GreenServe intelligence-per-watt experiments."
+readme = "README.md"
+requires-python = ">=3.13"
+license = {text = "Apache-2.0"}
+authors = [
+  {name = "Aether Contributors", email = "aether@yezhisheng.me"}
+]
+dependencies = [
+  "PyYAML>=5.4"
+]
+
+[project.optional-dependencies]
+sglang = [
+  "pynvml>=11.5"
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3"
+]
+sglang = [
+  "pynvml>=11.5"
+]
+
+[project.scripts]
+aether = "aether.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
